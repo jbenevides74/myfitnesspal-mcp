@@ -75,21 +75,80 @@ def _csrf_token(client) -> str:
     return (resp.json() or {}).get("csrfToken") or ""
 
 
-def _created_ids(made: dict) -> tuple[str | None, str | None]:
-    """The ids /food/add logs by. POST /api/services/foods has been seen
-    answering with the food top level and under "item", and with either the
-    legacy food_id/weight_id keys or v2 id/version, so all four are read."""
-    item = made.get("item") if isinstance(made.get("item"), dict) else made
-    food_id = item.get("food_id") or item.get("id")
-    weight_id = item.get("weight_id") or item.get("version")
-    if weight_id is None:
-        sizes = item.get("serving_sizes") or []
-        if sizes and isinstance(sizes[0], dict):
-            weight_id = sizes[0].get("weight_id")
-    return (
-        None if food_id is None else str(food_id),
-        None if weight_id is None else str(weight_id),
+NOT_LOGGABLE = (
+    "MyFitnessPal accepted the food but {problem}, so fitness_log_food cannot "
+    "use it; check fitness_list_custom kind=foods"
+)
+
+
+def _created_food(payload) -> dict:
+    """The food object in what POST /api/services/foods answers with.
+
+    Verified against a real account: the response is a bare JSON list holding
+    one created food per item posted, so the first dict wins. A single object,
+    or one under "item", is tolerated too in case the endpoint changes back.
+    """
+    if isinstance(payload, list):
+        for candidate in payload:
+            if isinstance(candidate, dict):
+                return candidate
+        raise RuntimeError(
+            NOT_LOGGABLE.format(problem="returned an empty list instead of the food")
+        )
+    if isinstance(payload, dict):
+        wrapped = payload.get("item")
+        return wrapped if isinstance(wrapped, dict) else payload
+    raise RuntimeError(
+        NOT_LOGGABLE.format(problem="returned no food object to read ids from")
     )
+
+
+def _serving_choices(item: dict) -> list[dict]:
+    """Each serving_size as a weight_id the caller can log by. A serving size
+    without an id is not loggable, so it is skipped."""
+    choices = []
+    for size in item.get("serving_sizes") or []:
+        if not isinstance(size, dict) or size.get("id") is None:
+            continue
+        unit = clean(str(size.get("unit") or ""))
+        value = size.get("value")
+        choices.append(
+            {
+                "weight_id": str(size["id"]),
+                "serving": f"{value:g} {unit}".strip()
+                if isinstance(value, int | float)
+                else unit,
+                "value": value,
+                "unit": unit,
+                "nutrition_multiplier": size.get("nutrition_multiplier"),
+            }
+        )
+    return choices
+
+
+def _created_ids(item: dict) -> tuple[str, str]:
+    """The food_id + weight_id /food/add logs by, or a clear error naming what
+    is missing: the food's own id, and its first serving size's id."""
+    food_id = item.get("food_id") or item.get("id")
+    if food_id is None or str(food_id) == "":
+        raise RuntimeError(NOT_LOGGABLE.format(problem="returned no food_id"))
+    sizes = item.get("serving_sizes") or []
+    weight_id = None
+    if sizes and isinstance(sizes[0], dict):
+        weight_id = sizes[0].get("id") or sizes[0].get("weight_id")
+    if weight_id is None:
+        weight_id = item.get("weight_id") or item.get("version")
+    if weight_id is None:
+        raise RuntimeError(
+            NOT_LOGGABLE.format(
+                problem=(
+                    "returned no serving sizes for it"
+                    if not sizes
+                    else "returned a serving size with no weight_id"
+                )
+            )
+        )
+    return str(food_id), str(weight_id)
 
 
 def create_food(
@@ -110,11 +169,14 @@ def create_food(
 ) -> dict:
     """Create a private food in "My Foods".
 
-    POSTs one item to the legacy /api/services/foods, which answers 200 with the
-    food it created; that request shape (the item wrapper, the token from
+    POSTs one item to the legacy /api/services/foods, which answers 200 with a
+    JSON list of the foods it created (one object, with its id and its serving
+    sizes' ids); that request shape (the item wrapper, the token from
     /api/auth/csrf in X-CSRF-Token, and country_code) is the one verified
     against a real account. The nutrition sent is for one serving_size x
-    serving_unit, with energy always in calories.
+    serving_unit, with energy always in calories, and the result reports what
+    MyFitnessPal stored, with every serving size's weight_id so the caller can
+    log it by a different one.
     """
     if not clean(description or ""):
         raise ValueError("description is required")
@@ -152,24 +214,25 @@ def create_food(
     )
     _require_status(resp, FOODS_ENDPOINT)
     try:
-        made = resp.json() or {}
+        payload = resp.json()
     except ValueError:
-        made = {}
+        payload = None
+    made = _created_food(payload)
     food_id, weight_id = _created_ids(made)
-    if not food_id or not weight_id:
-        raise RuntimeError(
-            "MyFitnessPal accepted the food but returned no food_id/weight_id, so "
-            "it cannot be logged; check fitness_list_custom kind=foods"
-        )
-    brand_name = clean(made.get("brand_name") or brand or "")
-    name = clean(made.get("description") or description)
+    stored = made.get("nutritional_contents")
+    nutrition = macros(stored if isinstance(stored, dict) else nutrition)
+    brand_name = clean(str(made.get("brand_name") or brand or ""))
+    name = clean(str(made.get("description") or description))
     return {
         "food_id": food_id,
         "weight_id": weight_id,
+        "description": name,
+        "brand_name": brand_name,
         "name": f"{brand_name} - {name}" if brand_name else name,
         "brand": brand_name,
         "serving": f"{serving_size:g} {clean(serving_unit)}",
-        "nutrition": macros(nutrition),
+        "nutrition": nutrition,
+        "serving_sizes": _serving_choices(made),
     }
 
 

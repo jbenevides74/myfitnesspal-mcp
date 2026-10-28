@@ -15,7 +15,87 @@ from myfitnesspal_mcp import custom_writes, server
 
 FOODS_URL = "https://www.myfitnesspal.com/api/services/foods"
 CSRF_URL = "https://www.myfitnesspal.com/api/auth/csrf"
-CREATED = {"food_id": "9001", "weight_id": "9001", "description": "Oat bar"}
+
+# The exact body the endpoint answered for a real create (2026-10-28): a bare
+# list of the foods it made, each serving_size carrying the weight_id.
+CREATED_LIST = [
+    {
+        "id": "132651829452213",
+        "version": "132651829452213",
+        "description": "1233123",
+        "public": True,
+        "brand_name": "21312",
+        "user_id": "208638537773037",
+        "deleted": False,
+        "serving_sizes": [
+            {
+                "id": "193666030171309",
+                "value": 2,
+                "unit": "g",
+                "nutrition_multiplier": 1,
+                "gram_weight": 1,
+                "fraction": False,
+                "index": 0,
+            },
+            {
+                "id": "194215785985197",
+                "value": 1,
+                "unit": "g",
+                "nutrition_multiplier": 0.5,
+                "gram_weight": 0.5,
+                "fraction": False,
+                "index": 1,
+            },
+            {
+                "id": "193668169233453",
+                "value": 1,
+                "unit": "container (24 gs ea.)",
+                "nutrition_multiplier": 12,
+                "gram_weight": 12,
+                "fraction": False,
+                "index": 2,
+            },
+        ],
+        "nutritional_contents": {
+            "energy": {"unit": "calories", "value": 234},
+            "fat": 234,
+            "carbohydrates": 234,
+            "net_carbs": 234,
+            "protein": 234,
+            "grams": 1,
+        },
+        "verified": False,
+        "type": "food",
+        "country_code": "PT",
+        "created_at": "2026-10-28T20:48:57.338372108Z",
+        "updated_at": "2026-10-28T20:48:57.338372108Z",
+    }
+]
+CREATED = {
+    "id": "9001",
+    "version": "9001",
+    "description": "Oat bar",
+    "brand_name": "Home",
+    "serving_sizes": [
+        {
+            "id": "9001",
+            "value": 55,
+            "unit": "g",
+            "nutrition_multiplier": 1,
+            "gram_weight": 55,
+        }
+    ],
+    "nutritional_contents": {
+        "energy": {"unit": "calories", "value": 210},
+        "protein": 9,
+        "carbohydrates": 30,
+        "fat": 7,
+        "fiber": 4,
+        "sugar": 5,
+        "sodium": 140,
+        "grams": 1,
+    },
+}
 
 
 @pytest.fixture
@@ -74,10 +154,21 @@ def test_create_food_posts_the_verified_payload(food_api):
     assert result == {
         "food_id": "9001",
         "weight_id": "9001",
+        "description": "Oat bar",
+        "brand_name": "Home",
         "name": "Home - Oat bar",
         "brand": "Home",
         "serving": "55 g",
         "nutrition": {"calories": 210, "protein": 9, "carbs": 30, "fat": 7},
+        "serving_sizes": [
+            {
+                "weight_id": "9001",
+                "serving": "55 g",
+                "value": 55,
+                "unit": "g",
+                "nutrition_multiplier": 1,
+            }
+        ],
     }
 
 
@@ -100,11 +191,47 @@ def test_create_food_leaves_optional_nutrition_out_until_given(food_api):
     ]
 
 
-def test_create_food_reads_the_item_wrapper_and_v2_ids(food_api):
+def test_create_food_reads_a_bare_list_response(food_api):
+    food_api.session.route(
+        "POST", "api/services/foods", FakeResponse(json_data=CREATED_LIST)
+    )
+
+    result = custom_writes.create_food(
+        food_api,
+        "ZZ test",
+        calories=80,
+        protein=19,
+        carbs=0.5,
+        fat=0.5,
+        brand="Dorita",
+        serving_size=100,
+        serving_unit="g",
+    )
+    assert (result["food_id"], result["weight_id"]) == (
+        "132651829452213",
+        "193666030171309",
+    )
+    assert result["description"] == "1233123"
+    assert result["brand_name"] == "21312"
+    assert result["nutrition"] == {
+        "calories": 234,
+        "protein": 234,
+        "carbs": 234,
+        "fat": 234,
+    }
+    assert [size["weight_id"] for size in result["serving_sizes"]] == [
+        "193666030171309",
+        "194215785985197",
+        "193668169233453",
+    ]
+    assert result["serving_sizes"][2]["serving"] == "1 container (24 gs ea.)"
+
+
+def test_create_food_reads_a_dict_response(food_api):
     food_api.session.route(
         "POST",
         "api/services/foods",
-        FakeResponse(json_data={"item": {"id": 11, "version": 12}}),
+        FakeResponse(json_data={"item": {"id": 11, "serving_sizes": [{"id": 12}]}}),
     )
 
     result = custom_writes.create_food(
@@ -113,11 +240,44 @@ def test_create_food_reads_the_item_wrapper_and_v2_ids(food_api):
     assert (result["food_id"], result["weight_id"]) == ("11", "12")
 
 
-def test_create_food_needs_ids_to_be_loggable(food_api):
+def test_create_food_reads_an_unwrapped_dict_response(food_api):
     food_api.session.route(
-        "POST", "api/services/foods", FakeResponse(json_data={"food_id": "9001"})
+        "POST",
+        "api/services/foods",
+        FakeResponse(json_data={"id": 13, "serving_sizes": [{"id": 14}]}),
     )
-    with pytest.raises(RuntimeError, match="no food_id/weight_id"):
+
+    result = custom_writes.create_food(
+        food_api, "Bar", calories=1, protein=0, carbs=0, fat=0
+    )
+    assert (result["food_id"], result["weight_id"]) == ("13", "14")
+
+
+def test_create_food_needs_serving_sizes_to_be_loggable(food_api):
+    food_api.session.route(
+        "POST", "api/services/foods", FakeResponse(json_data=[{"id": "9001"}])
+    )
+    with pytest.raises(RuntimeError, match="no serving sizes"):
+        custom_writes.create_food(
+            food_api, "Bar", calories=1, protein=0, carbs=0, fat=0
+        )
+
+
+def test_create_food_needs_a_food_id_to_be_loggable(food_api):
+    food_api.session.route(
+        "POST",
+        "api/services/foods",
+        FakeResponse(json_data=[{"serving_sizes": [{"id": "9001"}]}]),
+    )
+    with pytest.raises(RuntimeError, match="no food_id"):
+        custom_writes.create_food(
+            food_api, "Bar", calories=1, protein=0, carbs=0, fat=0
+        )
+
+
+def test_create_food_refuses_an_empty_list_response(food_api):
+    food_api.session.route("POST", "api/services/foods", FakeResponse(json_data=[]))
+    with pytest.raises(RuntimeError, match="empty list"):
         custom_writes.create_food(
             food_api, "Bar", calories=1, protein=0, carbs=0, fat=0
         )

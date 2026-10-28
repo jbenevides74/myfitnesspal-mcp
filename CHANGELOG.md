@@ -32,7 +32,17 @@ All notable changes to this project are documented here. The format follows
   `fitness_create_recipe` takes for each ingredient.
 - `fitness_create_food` posts the food to MyFitnessPal's create endpoint with
   the csrf token the web app uses and returns the new food's `food_id` +
-  `weight_id`, so it can be logged straight away.
+  `weight_id`, so it can be logged straight away. The endpoint answers with a
+  JSON list of what it created, which the tool now parses; the result also
+  carries `description`, `brand_name`, the nutrition MyFitnessPal stored, and
+  every serving size with its `weight_id`.
+
+### Fixed
+
+- `fitness_create_food` no longer fails with "'list' object has no attribute
+  'get'" after the food was created: the create endpoint answers with a list,
+  and a food with no serving sizes now raises a clear error instead of
+  returning no `weight_id`.
 
 ### Changed
 
