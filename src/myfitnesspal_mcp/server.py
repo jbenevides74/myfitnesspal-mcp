@@ -9,6 +9,7 @@ from mcp.types import ToolAnnotations
 from . import (
     diary,
     exercise,
+    food_creation,
     food_logging,
     food_search,
     measurements,
@@ -283,6 +284,51 @@ async def fitness_log_food(
         **refresh_warning,
         "day": get_store().day_record(result["date"]),
     }
+
+
+@mcp.tool(title="Create food", annotations=ADDS_TO_MFP)
+async def fitness_create_food(
+    name: str,
+    brand: str | None = None,
+    serving_size: str | None = None,
+    calories: float = 0.0,
+    protein: float = 0.0,
+    carbs: float = 0.0,
+    fat: float = 0.0,
+    fiber: float | None = None,
+    sugar: float | None = None,
+    sodium: float | None = None,
+    verified: bool = False,
+    ctx: Context = None,
+) -> dict:
+    """Create a custom food in MyFitnessPal's food database.
+
+    Saves a new food via MFP's undocumented POST /api/foods and returns its
+    food_id + weight_id, which fitness_log_food accepts directly.
+
+    name: food name (required). brand: optional brand name.
+    serving_size: description like "100g" or "1 cup" (default 100g).
+    calories: kcal per serving. protein, carbs, fat, fiber, sugar: grams.
+    sodium: milligrams. verified: mark the food verified (default False).
+    """
+
+    def op(store, client):
+        return food_creation.create_food(
+            client,
+            name=name,
+            brand=brand,
+            serving_size=serving_size,
+            calories=calories,
+            protein=protein,
+            carbs=carbs,
+            fat=fat,
+            fiber=fiber,
+            sugar=sugar,
+            sodium=sodium,
+            verified=verified,
+        )
+
+    return {"ok": True, **await with_session(ctx, op)}
 
 
 @mcp.tool(title="List remembered foods", annotations=READS_LOCAL)
