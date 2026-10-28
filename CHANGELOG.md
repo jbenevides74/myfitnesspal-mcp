@@ -14,6 +14,25 @@ All notable changes to this project are documented here. The format follows
 - `auth --clipboard` waits for the session cookie on the macOS clipboard and
   connects as soon as you copy it, skipping anything that isn't a session
   token (such as the command itself) and any token that doesn't authenticate.
+- Your own MyFitnessPal items: `fitness_list_custom` lists custom foods,
+  saved meals and recipes with their ids, servings and nutrition, and
+  `fitness_log_custom` logs one by name (a saved meal logs as its
+  ingredients). `fitness_create_food`, `fitness_create_meal` (saves what is
+  logged in one meal of a day), `fitness_create_recipe` and
+  `fitness_delete_custom` manage them. Everything created is private.
+- `fitness_complete_day` marks a diary day complete, reopens it, or reports
+  its state. Completing posts the day to your MyFitnessPal news feed, as the
+  website's button does.
+- Day records (`fitness_get_day`, the `day` in write results, and
+  `fitness_bulk_export`) include `goals` (calories, protein, carbs, fat),
+  `remaining` (goal minus logged), and `complete`.
+- Food log results include `added_entries`: the diary entries MyFitnessPal
+  actually added, read back from the diary.
+- `fitness_search_food` candidates include `external_id`, which
+  `fitness_create_recipe` takes for each ingredient.
+- `fitness_create_food` posts the food to MyFitnessPal's create endpoint with
+  the csrf token the web app uses and returns the new food's `food_id` +
+  `weight_id`, so it can be logged straight away.
 
 ### Changed
 
@@ -24,6 +43,15 @@ All notable changes to this project are documented here. The format follows
   also see 1 for a session that is about to lapse.
 - `cookies.json` now also holds MyFitnessPal's long-lived remember-me cookies
   next to the session token. The file's format is unchanged.
+- A food log that adds nothing to the diary now fails with an error instead
+  of reporting success. MyFitnessPal answers `/food/add` with 200 for any
+  `food_id`/`weight_id`, so a stale or invented id used to look logged.
+  Each log reads the day's diary once more to check.
+- The cache database gains four `day_nutrition` columns (`goal_protein`,
+  `goal_carbs`, `goal_fat`, `diary_complete`), added in place on first start.
+  The first sync after upgrading refetches the cached days in the
+  `MFP_SYNC_DAYS` window once to read their completion, and later syncs
+  refetch up to 7 recent days that aren't marked complete yet.
 
 ### Fixed
 

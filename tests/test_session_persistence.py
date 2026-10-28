@@ -1,5 +1,6 @@
 import json
 import stat
+import sys
 import time
 
 import pytest
@@ -51,7 +52,9 @@ def test_save_session_writes_a_rotation_once(cookies_file, jar_client):
 
     session_persistence.save_session(client)
     assert json.loads(cookies_file.read_text())["cookies"] == {SESSION: "rotated"}
-    assert stat.S_IMODE(cookies_file.stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        # Windows has no POSIX mode bits; chmod there only toggles read-only.
+        assert stat.S_IMODE(cookies_file.stat().st_mode) == 0o600
 
     cookies_file.unlink()
     session_persistence.save_session(client)

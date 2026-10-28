@@ -8,6 +8,7 @@ from curl_cffi import requests as cffi_requests
 from myfitnesspal.exceptions import MyfitnesspalLoginError
 
 from . import auth, config, diary, entry_matching, session_persistence
+from .day_completion import day_completion
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,12 @@ class CurlCffiClient(myfitnesspal.Client):
         self.session_renewed = True
         self._auth_data = self._get_auth_data()
         self._user_metadata = self._get_user_metadata()
+
+    def _get_completion(self, document) -> bool:
+        """The upstream version reads the first child of #complete_day, which
+        is a warning paragraph on a day completed under MFP's calorie minimum,
+        so such a day read as incomplete."""
+        return bool(day_completion(document))
 
     def _get_user_metadata(self):
         """MFP's v2 users endpoint 500s for some accounts; fall back to the

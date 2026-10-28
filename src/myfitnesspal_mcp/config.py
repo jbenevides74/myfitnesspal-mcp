@@ -42,5 +42,10 @@ def impersonate() -> str:
     return os.environ.get("MFP_IMPERSONATE", "chrome")
 
 
+def country_code() -> str:
+    """The country the food is created in; the verified create payload sent "PT"."""
+    return os.environ.get("MFP_COUNTRY_CODE", "PT")
+
+
 def sync_days() -> int:
     return int(os.environ.get("MFP_SYNC_DAYS", "30"))
