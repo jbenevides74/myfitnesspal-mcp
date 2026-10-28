@@ -8,6 +8,7 @@ from conftest import (
     FakeResponse,
     diary_after_add,
     my_foods_page,
+    my_foods_rows,
     tab_pages,
     tab_pages_requested,
 )
@@ -68,6 +69,106 @@ def test_list_custom_reads_all_three_kinds_with_details(library):
         "carbs": 30.0,
         "fat": 10.0,
     }
+
+
+ATUM = "ZZ MCP test atum"
+
+
+def test_foods_sharing_a_name_keep_their_own_v2_ids(library):
+    # Three of these were left on a real account by an earlier check. Keyed by
+    # name, all three took the id of whichever record the API listed last, so a
+    # delete of one name could remove another food. Each row's own serving is
+    # what tells its record from its twin's.
+    library.session.route(
+        "GET",
+        "food/load_my_foods",
+        tab_pages(
+            my_foods_rows(
+                [
+                    ("5104969123", f"Dorita - {ATUM}", [("5730249973", "100 g")]),
+                    ("5104969232", f"Dorita - {ATUM}", [("5730250086", "1 serving")]),
+                    ("5104973094", ATUM, [("5730254285", "100 g")]),
+                ]
+            )
+        ),
+    )
+    library.session.route(
+        "GET",
+        "api/services/users/foods/mine",
+        FakeResponse(
+            json_data=[
+                {
+                    "id": "96926333476789",
+                    "description": ATUM,
+                    "serving_sizes": [{"value": 100, "unit": "g"}],
+                },
+                {
+                    "id": "61744104693557",
+                    "brand_name": "Dorita",
+                    "description": ATUM,
+                    "serving_sizes": [{"value": 1, "unit": "serving"}],
+                },
+                {
+                    "id": "132660452990389",
+                    "brand_name": "Dorita",
+                    "description": ATUM,
+                    "serving_sizes": [{"value": 100, "unit": "g"}],
+                },
+            ]
+        ),
+    )
+    items = custom_items.list_custom(library, kind="foods")["items"]
+    assert [item["id"] for item in items] == [
+        "132660452990389",
+        "61744104693557",
+        "96926333476789",
+    ]
+    assert len({item["id"] for item in items}) == len(items)
+
+
+def test_two_identical_rows_still_get_two_ids(library):
+    # Even when nothing but the name is left to tell them apart, each row takes
+    # its own record rather than both pointing at one food.
+    library.session.route(
+        "GET",
+        "food/load_my_foods",
+        tab_pages(
+            my_foods_rows(
+                [
+                    ("5104969123", f"Dorita - {ATUM}", [("5730249973", "100 g")]),
+                    ("5104969232", f"Dorita - {ATUM}", [("5730250086", "100 g")]),
+                ]
+            )
+        ),
+    )
+    library.session.route(
+        "GET",
+        "api/services/users/foods/mine",
+        FakeResponse(
+            json_data=[
+                {
+                    "id": f"13266045299038{n}",
+                    "brand_name": "Dorita",
+                    "description": ATUM,
+                    "serving_sizes": [{"value": 100, "unit": "g"}],
+                }
+                for n in (9, 1)
+            ]
+        ),
+    )
+    items = custom_items.list_custom(library, kind="foods")["items"]
+    assert [item["id"] for item in items] == ["132660452990389", "132660452990381"]
+
+
+def test_a_row_with_no_record_keeps_empty_details(library):
+    library.session.route(
+        "GET",
+        "food/load_my_foods",
+        tab_pages(my_foods_page([("799", "Ghost", "7991")])),
+    )
+    item = custom_items.list_custom(library, kind="foods")["items"][0]
+    assert item["id"] is None
+    assert item["servings"] == [{"weight_id": "7991", "serving": "1 serving"}]
 
 
 def test_list_custom_filters_by_kind_and_query(library):

@@ -203,29 +203,58 @@ def tab_rows(client, kind: str) -> list[dict]:
     )
 
 
-def _food_details(client) -> dict[str, dict]:
+def normalize_label(text: str | None) -> str:
+    """A serving label as it reads in the tab, normalized for comparison: case,
+    spacing and the decimal comma the site sometimes uses don't change which
+    serving a row means."""
+    return " ".join((text or "").lower().replace(",", ".").split())
+
+
+def serving_text(value, unit) -> str:
+    """How the tab spells a serving size: "100 g", "1 container (24 gs ea.)"."""
+    unit = clean(str(unit or ""))
+    if isinstance(value, int | float):
+        return f"{value:g} {unit}".strip()
+    return unit
+
+
+def _food_records(client) -> list[dict]:
+    """One record per food in My Foods, in the order the endpoint lists them.
+
+    A list, not a dict keyed by name: two foods may share a name and each keeps
+    its own id, so looking details up by name handed every duplicate whichever
+    record was read last.
+    """
     resp = client.session.get(
         web_url(client, "api/services/users/foods/mine"),
         params={"search": ""},
         headers={"Accept": "application/json"},
     )
     resp.raise_for_status()
-    details = {}
+    records = []
     for food in resp.json() or []:
         brand = clean(food.get("brand_name") or "")
         name = clean(food.get("description") or "")
-        extra = {
-            "id": food.get("id"),
-            "nutrition": macros(food.get("nutritional_contents") or {}),
-        }
-        details[name.lower()] = extra
-        if brand:
-            details[f"{brand} - {name}".lower()] = extra
-    return details
+        sizes = food.get("serving_sizes") or []
+        first = sizes[0] if sizes and isinstance(sizes[0], dict) else {}
+        records.append(
+            {
+                "name": f"{brand} - {name}" if brand else name,
+                "aliases": [name] if brand else [],
+                "serving": normalize_label(
+                    serving_text(first.get("value"), first.get("unit"))
+                ),
+                "details": {
+                    "id": food.get("id"),
+                    "nutrition": macros(food.get("nutritional_contents") or {}),
+                },
+            }
+        )
+    return records
 
 
-def _meal_details(client) -> dict[str, dict]:
-    details = {}
+def _meal_records(client) -> list[dict]:
+    records = []
     for meal in saved_meals(client):
         ingredients = [
             {
@@ -241,30 +270,48 @@ def _meal_details(client) -> dict[str, dict]:
             key: sum(food.get(key) or 0 for food in ingredients)
             for key in ("calories", "protein", "carbs", "fat")
         }
-        details[clean(meal.get("description") or "").lower()] = {
-            "meal_id": meal.get("meal_id"),
-            "ingredients": ingredients,
-            "nutrition": totals,
-        }
-    return details
+        records.append(
+            {
+                "name": clean(meal.get("description") or ""),
+                "aliases": [],
+                # a saved meal logs as "1 meal", which no meal record carries;
+                # the name alone identifies it.
+                "serving": None,
+                "details": {
+                    "meal_id": meal.get("meal_id"),
+                    "ingredients": ingredients,
+                    "nutrition": totals,
+                },
+            }
+        )
+    return records
 
 
-def _recipe_details(client) -> dict[str, dict]:
-    details = {}
+def _recipe_records(client) -> list[dict]:
+    records = []
     for recipe in all_recipes(client):
         servings = recipe.get("servings") or 1.0
-        details[clean(recipe.get("name") or "").lower()] = {
-            "recipe_id": recipe.get("id"),
-            "recipe_servings": servings,
-            "nutrition": macros(recipe.get("nutritional_contents") or {}, servings),
-        }
-    return details
+        records.append(
+            {
+                "name": clean(recipe.get("name") or ""),
+                "aliases": [],
+                "serving": None,
+                "details": {
+                    "recipe_id": recipe.get("id"),
+                    "recipe_servings": servings,
+                    "nutrition": macros(
+                        recipe.get("nutritional_contents") or {}, servings
+                    ),
+                },
+            }
+        )
+    return records
 
 
-DETAIL_READERS = {
-    "foods": _food_details,
-    "meals": _meal_details,
-    "recipes": _recipe_details,
+RECORD_READERS = {
+    "foods": _food_records,
+    "meals": _meal_records,
+    "recipes": _recipe_records,
 }
 EMPTY_DETAILS = {
     "foods": {"id": None, "nutrition": None},
@@ -273,12 +320,50 @@ EMPTY_DETAILS = {
 }
 
 
-def details(client, kind: str) -> tuple[dict[str, dict], str | None]:
-    """Extra fields per lowercase item name, and a note when they couldn't be
-    read. Names and ids come from the tabs, so listing and logging still work
+def _claims(rows: list[dict], records: list[dict]) -> dict[str, dict]:
+    """Each tab row's own details, keyed by the row's food_id.
+
+    A record is taken off the pool once, so two items that share a name get two
+    different ids instead of both pointing at whichever record was read last.
+    Rows are matched on the name the tab shows, then (for a branded food whose
+    row shows only the description) on the description alone, and within a name
+    the record whose first serving matches the row's wins. A row left without a
+    record keeps the empty details: listing and logging still work.
+    """
+    taken: set[int] = set()
+    claimed: dict[str, dict] = {}
+    for key in ("name", "aliases"):
+        pools: dict[str, list[int]] = {}
+        for index, record in enumerate(records):
+            if index in taken:
+                continue
+            names = [record["name"]] if key == "name" else record["aliases"]
+            for name in names:
+                pools.setdefault(name.lower(), []).append(index)
+        for row in rows:
+            if row["food_id"] in claimed:
+                continue
+            pool = pools.get(row["name"].lower())
+            if not pool:
+                continue
+            wanted = (
+                normalize_label(row["servings"][0]["serving"])
+                if row["servings"]
+                else None
+            )
+            index = next((i for i in pool if records[i]["serving"] == wanted), pool[0])
+            pool.remove(index)
+            taken.add(index)
+            claimed[row["food_id"]] = records[index]["details"]
+    return claimed
+
+
+def details(client, kind: str, rows: list[dict]) -> tuple[dict[str, dict], str | None]:
+    """Extra fields per tab-row food_id, and a note when they couldn't be read.
+    Names and ids come from the tabs, so listing and logging still work
     without them."""
     try:
-        return DETAIL_READERS[kind](client), None
+        return _claims(rows, RECORD_READERS[kind](client)), None
     except Exception as exc:
         if is_auth_error(exc):
             raise
@@ -289,10 +374,8 @@ def details(client, kind: str) -> tuple[dict[str, dict], str | None]:
 def items_with_details(
     client, kind: str, rows: list[dict]
 ) -> tuple[list[dict], str | None]:
-    extra, problem = details(client, kind) if rows else ({}, None)
-    items = [
-        {**row, **extra.get(row["name"].lower(), EMPTY_DETAILS[kind])} for row in rows
-    ]
+    extra, problem = details(client, kind, rows) if rows else ({}, None)
+    items = [{**row, **extra.get(row["food_id"], EMPTY_DETAILS[kind])} for row in rows]
     return items, problem
 
 

@@ -472,7 +472,10 @@ async def fitness_delete_custom(name: str, kind: str, ctx: Context = None) -> di
     undone.
 
     name: the item's exact name as fitness_list_custom shows it (no partial
-    matches). kind: food | meal | recipe.
+    matches). kind: food | meal | recipe. Only one item is deleted per call;
+    when several share the exact name the first is deleted and the answer's
+    `food_id`, `id`/`recipe_id`/`meal_id`, `other_ids` and `note` say which one
+    went and what is left, so call again to delete another.
     """
 
     def op(store, client):

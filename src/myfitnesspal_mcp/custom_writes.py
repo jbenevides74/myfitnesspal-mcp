@@ -373,7 +373,23 @@ def _delete_request(client, plural: str, item: dict):
     raise NoSuchItem(f"couldn't find the MyFitnessPal id of {item['name']!r}")
 
 
+ID_FIELDS = {"foods": "id", "meals": "meal_id", "recipes": "recipe_id"}
+
+
+def _exact_matches(items: list[dict], name: str) -> list[dict]:
+    wanted = clean(name).lower()
+    return [item for item in items if item["name"].lower() == wanted]
+
+
 def delete_custom(client, name: str, kind: str) -> dict:
+    """Delete exactly one item by its exact name.
+
+    MyFitnessPal lets two foods, meals or recipes share a name, and a delete
+    names only one of them. When several match, the first is deleted and the
+    answer says which id went and how many still carry the name, so the caller
+    can delete again deliberately instead of losing them all at once. Only one
+    item is ever deleted per call.
+    """
     plurals = kinds(kind)
     if len(plurals) != 1:
         raise ValueError(f"kind must be one of: {', '.join(KINDS.values())}")
@@ -381,6 +397,28 @@ def delete_custom(client, name: str, kind: str) -> dict:
     items, problem = items_with_details(client, plural, tab_rows(client, plural))
     if problem:
         raise RuntimeError(f"can't delete safely: {problem}")
-    item = pick(items, name, exact_only=True)
+    matches = _exact_matches(items, name)
+    if not matches:
+        pick(items, name, exact_only=True)  # raises, naming what does exist
+    item = matches[0]
+    field = ID_FIELDS[plural]
+    if item.get(field) is None:
+        raise NoSuchItem(
+            f"can't delete {item['name']!r}: MyFitnessPal gave no {field} for it, "
+            "so there is nothing to delete by"
+        )
     _require_status(_delete_request(client, plural, item), "delete", ok=(200, 204))
-    return {"deleted": item["name"], "kind": KINDS[plural]}
+    result = {
+        "deleted": item["name"],
+        "kind": KINDS[plural],
+        "food_id": item["food_id"],
+        field: item[field],
+    }
+    if len(matches) > 1:
+        result["other_ids"] = [match[field] for match in matches[1:]]
+        result["note"] = (
+            f"{len(matches)} items are named {item['name']!r}; deleted the first "
+            f"one ({field} {item[field]}) and left the other {len(matches) - 1} "
+            "alone, so call this again to delete another"
+        )
+    return result

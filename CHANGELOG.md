@@ -49,6 +49,16 @@ All notable changes to this project are documented here. The format follows
   so a newly created food (which sorts last) reported "nothing matches". Pages
   are read until one comes back empty, with a 20-page bound that errors
   instead of quietly truncating.
+- Two of your items that share a name no longer share one id: details from
+  `foods/mine`, `meals/mine` and v2 `/recipes` are matched to each tab row
+  (by its own `food_id`, and within a name by the row's first serving) instead
+  of being keyed by display name, so `fitness_list_custom` shows each duplicate
+  its own id and `fitness_delete_custom` deletes the intended one.
+- `fitness_delete_custom` deletes exactly one item per call. When several share
+  the exact name it deletes the first and returns `food_id`,
+  `id`/`recipe_id`/`meal_id`, `other_ids` and a `note` saying what is left,
+  instead of failing on the ambiguity; it also reports the deleted ids for a
+  unique name.
 
 ### Changed
 

@@ -121,6 +121,28 @@ def my_foods_page(items, page=1):
     )
 
 
+def my_foods_rows(rows, page=1):
+    """One page of the My Foods tab from (food_id, name, [(weight_id, label), …])
+    rows, with each serving label spelled out. Duplicates that differ only in
+    their servings need that: which record a row belongs to is decided by them.
+    """
+    trs = "".join(
+        f'<tr class="favorite"><td><input name="favorites[{i}][food_id]" '
+        f'type="hidden" value="{food_id}" /></td><td>{name}</td>'
+        f'<td><select name="favorites[{i}][weight_id]">'
+        + "".join(
+            f'<option value="{weight_id}">{label}</option>'
+            for weight_id, label in servings
+        )
+        + "</select></td></tr>"
+        for i, (food_id, name, servings) in enumerate(rows)
+    )
+    return (
+        f'<div id="my_foods_page_{page}" class="my_foods_page">'
+        f"<table><tbody>{trs}</tbody></table></div>"
+    )
+
+
 def tab_pages_requested(client):
     """The ?page=N each legacy tab was asked for, in order."""
     return [

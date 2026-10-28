@@ -8,6 +8,7 @@ from conftest import (
     RECIPES_API,
     FakeResponse,
     my_foods_page,
+    my_foods_rows,
     tab_pages,
     tab_pages_requested,
 )
@@ -219,6 +220,8 @@ def test_delete_custom_deletes_only_an_exact_name(library):
     assert custom_writes.delete_custom(library, "turkey chili", "recipe") == {
         "deleted": "Turkey Chili",
         "kind": "recipe",
+        "food_id": "901",
+        "recipe_id": "7001",
     }
     with pytest.raises(custom_items.NoSuchItem, match="exact name"):
         custom_writes.delete_custom(library, "Turkey", "recipe")
@@ -271,8 +274,122 @@ def test_delete_custom_deletes_a_food_that_sits_past_the_first_tab_page(library)
     assert custom_writes.delete_custom(library, "ZZ MCP final check", "food") == {
         "deleted": "ZZ MCP final check",
         "kind": "food",
+        "food_id": "5104992094",
+        "id": "26559556460469",
     }
     assert tab_pages_requested(library) == ["1", "2", "3"]
+
+
+ATUM = "Dorita - ZZ MCP test atum"
+
+
+@pytest.fixture
+def duplicate_atums(library):
+    """Two foods left on the account under one name by an earlier check, each
+    100 g and 1 serving apart, as the tab and foods/mine show them."""
+    library.session.route(
+        "GET",
+        "food/load_my_foods",
+        tab_pages(
+            my_foods_rows(
+                [
+                    ("5104969123", ATUM, [("5730249973", "100 g")]),
+                    ("5104969232", ATUM, [("5730250086", "1 serving")]),
+                ]
+            )
+        ),
+    )
+    library.session.route(
+        "GET",
+        "api/services/users/foods/mine",
+        FakeResponse(
+            json_data=[
+                {
+                    "id": "61744104693557",
+                    "brand_name": "Dorita",
+                    "description": "ZZ MCP test atum",
+                    "serving_sizes": [{"value": 1, "unit": "serving"}],
+                },
+                {
+                    "id": "132660452990389",
+                    "brand_name": "Dorita",
+                    "description": "ZZ MCP test atum",
+                    "serving_sizes": [{"value": 100, "unit": "g"}],
+                },
+            ]
+        ),
+    )
+    return library
+
+
+def test_delete_custom_on_a_duplicated_name_deletes_one_and_says_which(
+    duplicate_atums,
+):
+    library = duplicate_atums
+    library.session.route(
+        "DELETE", "v2/foods/132660452990389", FakeResponse(status_code=204)
+    )
+    result = custom_writes.delete_custom(library, ATUM, "food")
+    assert result["id"] == "132660452990389"
+    assert result["food_id"] == "5104969123"
+    assert result["other_ids"] == ["61744104693557"]
+    assert "deleted the first one" in result["note"]
+    deletes = [call for call in library.session.calls if call[0] == "DELETE"]
+    assert [call[1] for call in deletes] == [
+        "https://api.myfitnesspal.com/v2/foods/132660452990389"
+    ]
+
+
+def test_delete_custom_deletes_the_other_of_a_duplicated_name_next_time(
+    duplicate_atums,
+):
+    library = duplicate_atums
+    pages = [
+        my_foods_rows(
+            [
+                ("5104969123", ATUM, [("5730249973", "100 g")]),
+                ("5104969232", ATUM, [("5730250086", "1 serving")]),
+            ]
+        ),
+        my_foods_rows([("5104969232", ATUM, [("5730250086", "1 serving")])], page=1),
+        "",
+    ]
+
+    def tab_after_each_delete(calls):
+        deletes = sum(1 for method, _, _ in calls if method == "DELETE")
+        return FakeResponse(text=pages[min(deletes, len(pages) - 1)])
+
+    library.session.route("GET", "food/load_my_foods", tab_after_each_delete)
+    library.session.route(
+        "DELETE", "v2/foods/61744104693557", FakeResponse(status_code=204)
+    )
+    library.session.route(
+        "DELETE", "v2/foods/132660452990389", FakeResponse(status_code=204)
+    )
+    first = custom_writes.delete_custom(library, ATUM, "food")
+    second = custom_writes.delete_custom(library, ATUM, "food")
+    assert first["id"] == "132660452990389"
+    assert second["id"] == "61744104693557"
+    assert "note" not in second
+
+
+def test_delete_custom_single_name_reports_the_deleted_id(library):
+    library.session.route("DELETE", "v2/foods/5001", FakeResponse(status_code=204))
+    result = custom_writes.delete_custom(library, "Corner Cafe - Veggie Bowl", "food")
+    assert result == {
+        "deleted": "Corner Cafe - Veggie Bowl",
+        "kind": "food",
+        "food_id": "701",
+        "id": "5001",
+    }
+    assert "note" not in result
+
+
+def test_delete_custom_refuses_a_match_whose_id_is_unknown(library):
+    library.session.route("DELETE", "v2/foods/", FakeResponse(status_code=204))
+    with pytest.raises(custom_items.NoSuchItem, match="no id for it"):
+        custom_writes.delete_custom(library, "Protein Waffle", "food")
+    assert not [call for call in library.session.calls if call[0] == "DELETE"]
 
 
 def test_delete_custom_needs_one_kind(library):
