@@ -2,7 +2,15 @@ import datetime
 import json
 
 import pytest
-from conftest import FIXTURES, RECIPES_API, FakeResponse
+from conftest import (
+    FIXTURES,
+    MY_FOODS_API,
+    RECIPES_API,
+    FakeResponse,
+    my_foods_page,
+    tab_pages,
+    tab_pages_requested,
+)
 
 from myfitnesspal_mcp import (
     custom_items,
@@ -234,6 +242,37 @@ def test_delete_custom_refuses_when_details_fail(library, monkeypatch):
     with pytest.raises(RuntimeError, match="can't delete safely"):
         custom_writes.delete_custom(library, "Turkey Chili", "recipe")
     assert not [c for c in library.session.calls if c[0] == "DELETE"]
+
+
+def test_delete_custom_deletes_a_food_that_sits_past_the_first_tab_page(library):
+    # A newly created food sorts to the end of My Foods, several pages in; the
+    # delete still has to find it, by its v2 id from foods/mine.
+    library.session.route(
+        "GET",
+        "food/load_my_foods",
+        tab_pages(
+            my_foods_page([("701", "Corner Cafe - Veggie Bowl", "7011")]),
+            my_foods_page([("5104992094", "ZZ MCP final check", "9001")], page=2),
+        ),
+    )
+    library.session.route(
+        "GET",
+        "api/services/users/foods/mine",
+        FakeResponse(
+            json_data=[
+                *MY_FOODS_API,
+                {"id": "26559556460469", "description": "ZZ MCP final check"},
+            ]
+        ),
+    )
+    library.session.route(
+        "DELETE", "v2/foods/26559556460469", FakeResponse(status_code=204)
+    )
+    assert custom_writes.delete_custom(library, "ZZ MCP final check", "food") == {
+        "deleted": "ZZ MCP final check",
+        "kind": "food",
+    }
+    assert tab_pages_requested(library) == ["1", "2", "3"]
 
 
 def test_delete_custom_needs_one_kind(library):

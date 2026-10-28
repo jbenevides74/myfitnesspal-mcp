@@ -90,6 +90,46 @@ def diary_after_add(before_html, new_row=ADDED_ROW):
     return respond
 
 
+def tab_pages(*page_html):
+    """A legacy-tab route that answers ?page=N with page N's rows.
+
+    The real tabs take a page number and 25 rows a page, and answer an empty
+    body past the last page, so a route replays that from the HTML handed in.
+    """
+    bodies = list(page_html)
+
+    def respond(calls):
+        params = calls[-1][2].get("params") or {}
+        page = int(params.get("page") or 1)
+        return FakeResponse(text=bodies[page - 1] if page <= len(bodies) else "")
+
+    return respond
+
+
+def my_foods_page(items, page=1):
+    """One page of the My Foods tab, shaped like the real markup."""
+    rows = "".join(
+        f'<tr class="favorite"><td><input name="favorites[{i}][food_id]" '
+        f'type="hidden" value="{food_id}" /></td><td>{name}</td>'
+        f'<td><select name="favorites[{i}][weight_id]">'
+        f'<option value="{weight_id}">1 serving</option></select></td></tr>'
+        for i, (food_id, name, weight_id) in enumerate(items)
+    )
+    return (
+        f'<div id="my_foods_page_{page}" class="my_foods_page">'
+        f"<table><tbody>{rows}</tbody></table></div>"
+    )
+
+
+def tab_pages_requested(client):
+    """The ?page=N each legacy tab was asked for, in order."""
+    return [
+        kw["params"]["page"]
+        for m, url, kw in client.session.calls
+        if "food/load_" in url
+    ]
+
+
 MY_FOODS_API = [
     {
         "id": "5001",
@@ -133,21 +173,14 @@ RECIPES_API = {"items": [CHILI]}
 def library(client):
     """The fake client with your own foods, saved meals and recipes."""
     session = client.session
-    session.route(
-        "GET",
-        "food/load_my_foods",
-        FakeResponse(text=(FIXTURES / "favorites_my_foods.html").read_text()),
-    )
-    session.route(
-        "GET",
-        "food/load_meals",
-        FakeResponse(text=(FIXTURES / "favorites_meals.html").read_text()),
-    )
-    session.route(
-        "GET",
-        "food/load_recipes",
-        FakeResponse(text=(FIXTURES / "favorites_recipes.html").read_text()),
-    )
+    for tab, name in (
+        ("my_foods", "favorites_my_foods.html"),
+        ("meals", "favorites_meals.html"),
+        ("recipes", "favorites_recipes.html"),
+    ):
+        session.route(
+            "GET", f"food/load_{tab}", tab_pages((FIXTURES / name).read_text())
+        )
     session.route(
         "GET", "api/services/users/foods/mine", FakeResponse(json_data=MY_FOODS_API)
     )

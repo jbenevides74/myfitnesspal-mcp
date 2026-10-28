@@ -30,6 +30,11 @@ TABS = {"foods": "my_foods", "meals": "meals", "recipes": "recipes"}
 # repeated (seen against a real account, 2026-10). Only reads retry.
 RETRY_STATUSES = (400, 429, 500, 502, 503, 504)
 MAX_RECIPE_PAGES = 50
+# The legacy "Add Food to Diary" tabs answer 25 rows per page for ?page=N and an
+# empty page past the end (verified live, 2026-10). A large account needs a few
+# pages, so the loop is bounded and says so instead of stopping silently.
+MAX_TAB_PAGES = 20
+TAB_PAGE_SIZE = 25
 LISTED_NAMES_LIMIT = 15
 
 
@@ -141,12 +146,12 @@ def _tab_row(tr, kind: str) -> dict | None:
     }
 
 
-def tab_rows(client, kind: str) -> list[dict]:
+def _tab_page(client, kind: str, page: int) -> list[dict]:
     # A POST, or a request MFP won't serve, is answered with a 302 to the login
     # page. Following it yields a page with no rows, which reads as "no items".
     resp = client.session.get(
         web_url(client, f"food/load_{TABS[kind]}"),
-        params={"meal": "0", "page": "1"},
+        params={"meal": "0", "page": str(page)},
         headers=api_headers(client),
         allow_redirects=False,
     )
@@ -161,6 +166,41 @@ def tab_rows(client, kind: str) -> list[dict]:
         return []
     rows = lh.fromstring(resp.text).xpath("//tr[contains(@class, 'favorite')]")
     return [row for row in (_tab_row(tr, kind) for tr in rows) if row]
+
+
+def tab_rows(client, kind: str) -> list[dict]:
+    """Every row of a legacy tab, page by page.
+
+    The tab ignores any page size and answers 25 rows per ?page=N, so one GET
+    only ever saw the first 25 items and a newly created food (which sorts to
+    the end) looked missing. Pages are read until one comes back empty, or
+    (should MFP stop advancing) returns nothing new; MAX_TAB_PAGES bounds a
+    runaway loop and raises rather than quietly truncating.
+    """
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for page in range(1, MAX_TAB_PAGES + 1):
+        page_rows = _tab_page(client, kind, page)
+        if not page_rows:
+            return rows
+        new = [row for row in page_rows if row["food_id"] not in seen]
+        if not new:
+            logger.warning(
+                "food/load_%s page %s repeated the rows already read; "
+                "stopping at %s rows",
+                TABS[kind],
+                page,
+                len(rows),
+            )
+            return rows
+        seen.update(row["food_id"] for row in new)
+        rows.extend(new)
+    raise RuntimeError(
+        f"read {MAX_TAB_PAGES} pages of food/load_{TABS[kind]} "
+        f"({TAB_PAGE_SIZE} a page) and MyFitnessPal still had more, so the list "
+        f"is truncated at {len(rows)} items; narrow it with fitness_list_custom "
+        "query= or raise custom_items.MAX_TAB_PAGES"
+    )
 
 
 def _food_details(client) -> dict[str, dict]:

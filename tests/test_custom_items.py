@@ -2,7 +2,15 @@ import asyncio
 import datetime
 
 import pytest
-from conftest import CHILI, RECIPES_API, FakeResponse, diary_after_add
+from conftest import (
+    CHILI,
+    RECIPES_API,
+    FakeResponse,
+    diary_after_add,
+    my_foods_page,
+    tab_pages,
+    tab_pages_requested,
+)
 
 from myfitnesspal_mcp import custom_items, food_search, mfp_client, server
 from myfitnesspal_mcp.store import Store
@@ -69,7 +77,8 @@ def test_list_custom_filters_by_kind_and_query(library):
         "Smoothie, large",
     ]
     tabs = [(m, url) for m, url, _ in library.session.calls if "food/load_" in url]
-    assert tabs == [("GET", "https://www.myfitnesspal.com/food/load_meals")]
+    assert tabs == [("GET", "https://www.myfitnesspal.com/food/load_meals")] * 2
+    assert tab_pages_requested(library) == ["1", "2"]
     assert not [call for call in library.session.calls if call[0] == "POST"]
 
 
@@ -96,6 +105,63 @@ def test_tab_requests_never_follow_redirects(library):
     custom_items.list_custom(library, kind="foods")
     tab_kwargs = [kw for m, url, kw in library.session.calls if "food/load_" in url]
     assert tab_kwargs[0]["allow_redirects"] is False
+
+
+def test_tab_rows_reads_a_food_only_a_later_page_holds(library):
+    # ?page=N answers 25 rows a page and an empty page past the end, so a new
+    # custom food (which sorts last) is on a later page than the first.
+    library.session.route(
+        "GET",
+        "food/load_my_foods",
+        tab_pages(
+            my_foods_page([("701", "Corner Cafe - Veggie Bowl", "7011")]),
+            my_foods_page([("5104992094", "ZZ MCP final check", "9001")], page=2),
+        ),
+    )
+    items = custom_items.list_custom(library, kind="foods")["items"]
+    assert [item["name"] for item in items] == [
+        "Corner Cafe - Veggie Bowl",
+        "ZZ MCP final check",
+    ]
+    late = items[-1]
+    assert late["food_id"] == "5104992094"
+    assert late["servings"] == [{"weight_id": "9001", "serving": "1 serving"}]
+    # the details join still lands on the page-1 item
+    assert items[0]["id"] == "5001"
+    assert tab_pages_requested(library) == ["1", "2", "3"]
+
+
+def test_tab_rows_stops_at_the_first_empty_page(library):
+    assert [row["name"] for row in custom_items.tab_rows(library, "foods")] == [
+        "Corner Cafe - Veggie Bowl",
+        "Protein Waffle",
+    ]
+    assert tab_pages_requested(library) == ["1", "2"]
+
+
+def test_tab_rows_stops_when_a_page_repeats_the_rows_already_read(library, caplog):
+    same_page = my_foods_page([("701", "Corner Cafe - Veggie Bowl", "7011")])
+    library.session.route("GET", "food/load_my_foods", tab_pages(same_page, same_page))
+    assert [row["food_id"] for row in custom_items.tab_rows(library, "foods")] == [
+        "701"
+    ]
+    assert tab_pages_requested(library) == ["1", "2"]
+    assert "repeated the rows already read" in caplog.text
+
+
+def test_tab_rows_refuses_to_truncate_at_the_page_bound(library, monkeypatch):
+    monkeypatch.setattr(custom_items, "MAX_TAB_PAGES", 3)
+
+    def endless(calls):
+        page = int(calls[-1][2]["params"]["page"])
+        return FakeResponse(
+            text=my_foods_page([(f"{page}000", f"Filler {page}", f"{page}001")], page)
+        )
+
+    library.session.route("GET", "food/load_my_foods", endless)
+    with pytest.raises(RuntimeError, match="read 3 pages.*still had more"):
+        custom_items.tab_rows(library, "foods")
+    assert tab_pages_requested(library) == ["1", "2", "3"]
 
 
 def test_list_custom_survives_a_failing_detail_api(library, make_response, caplog):

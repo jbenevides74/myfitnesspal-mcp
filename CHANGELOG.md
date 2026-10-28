@@ -43,6 +43,12 @@ All notable changes to this project are documented here. The format follows
   'get'" after the food was created: the create endpoint answers with a list,
   and a food with no serving sizes now raises a clear error instead of
   returning no `weight_id`.
+- `fitness_list_custom`, `fitness_log_custom` and `fitness_delete_custom` now
+  see every page of your own foods, meals and recipes. The "Add Food to Diary"
+  tabs they read answer 25 items a page, and only the first page was fetched,
+  so a newly created food (which sorts last) reported "nothing matches". Pages
+  are read until one comes back empty, with a 20-page bound that errors
+  instead of quietly truncating.
 
 ### Changed
 
