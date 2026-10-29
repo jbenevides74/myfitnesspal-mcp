@@ -20,6 +20,7 @@ from .custom_items import (
     items_with_details,
     json_headers,
     kinds,
+    list_custom,
     macros,
     pick,
     saved_meals,
@@ -151,6 +152,38 @@ def _created_ids(item: dict) -> tuple[str, str]:
     return str(food_id), str(weight_id)
 
 
+def _diary_ids(client, name: str, serving_label: str, fallback: tuple) -> tuple:
+    """The ids /food/add actually logs by.
+
+    POST /api/services/foods answers with the created food object's own ``id``
+    and its ``serving_sizes[].id``; those are NOT the ids the diary endpoint
+    accepts. /food/add answers 200 for any pair it is given and silently logs
+    nothing when they match no food, so a create-then-log chain fed with them
+    looks successful and puts no entry in the diary. The "My Foods" tab
+    (/food/load_my_foods) carries the real food_id + weight_id pair, so look the
+    new food up there by name and prefer those, falling back to what the create
+    response gave only if the row cannot be found.
+    """
+    try:
+        found = list_custom(client, "food", query=name).get("items") or []
+    except Exception:  # a page-scrape failure must not undo a successful create
+        return fallback
+    wanted = clean(name).lower()
+    for item in found:
+        if clean(str(item.get("name") or "")).lower() != wanted:
+            continue
+        servings = item.get("servings") or []
+        if not servings:
+            continue
+        chosen = servings[0]
+        for serving in servings:
+            if clean(str(serving.get("serving") or "")) == clean(serving_label):
+                chosen = serving
+                break
+        return str(item["food_id"]), str(chosen["weight_id"])
+    return fallback
+
+
 def create_food(
     client,
     description: str,
@@ -223,6 +256,9 @@ def create_food(
     nutrition = macros(stored if isinstance(stored, dict) else nutrition)
     brand_name = clean(str(made.get("brand_name") or brand or ""))
     name = clean(str(made.get("description") or description))
+    food_id, weight_id = _diary_ids(
+        client, name, f"{serving_size:g} {clean(serving_unit)}", (food_id, weight_id)
+    )
     return {
         "food_id": food_id,
         "weight_id": weight_id,
